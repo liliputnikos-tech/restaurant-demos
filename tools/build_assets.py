@@ -6,21 +6,28 @@ fonts come from Google Fonts (SIL Open Font License). Each photo is cropped,
 resized and compressed exactly as for the local build, then checked against
 the expected SHA-256.
 """
-import hashlib, io, json, os, sys, time, urllib.parse, urllib.request
+import hashlib, io, json, os, sys, time, urllib.error, urllib.parse, urllib.request
 from PIL import Image, ImageOps
 
-UA = {"User-Agent": "restaurant-demos-asset-builder/1.0 (GitHub Actions; static demo sites)"}
+UA = {"User-Agent": "restaurant-demos-asset-builder/1.1 (+https://github.com/liliputnikos-tech/restaurant-demos)"}
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def fetch(url):
-    for attempt in range(4):
+def fetch(url, attempts=8):
+    """GET with polite pacing and back-off (Wikimedia rate-limits shared CI IPs)."""
+    for attempt in range(attempts):
+        time.sleep(1)
         try:
             return urllib.request.urlopen(urllib.request.Request(url, headers=UA), timeout=60).read()
-        except Exception as e:  # retry transient errors
-            if attempt == 3:
+        except urllib.error.HTTPError as e:
+            if attempt == attempts - 1 or e.code not in (429, 500, 502, 503, 504):
                 raise
-            time.sleep(3 * (attempt + 1))
+            wait = e.headers.get("Retry-After")
+            time.sleep(int(wait) if wait and wait.isdigit() else min(60, 5 * 2 ** attempt))
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(5 * (attempt + 1))
 
 
 def commons_url(title, width=1920):
@@ -75,7 +82,7 @@ def main():
         elif a.get("kind") == "og":
             data = og(built[a["from"]])
         else:
-            src = commons_url(a["commons"]) if "commons" in a else a["url"]
+            src = a["url"] if "url" in a else commons_url(a["commons"])
             data = prep(fetch(src), a["maxw"], a.get("crop"))
         built[a["path"]] = data
         os.makedirs(os.path.dirname(path), exist_ok=True)
